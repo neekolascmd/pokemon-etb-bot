@@ -157,6 +157,19 @@ def format_result(result: CheckResult) -> str:
     return " | ".join(parts)
 
 
+def format_alert(result: CheckResult) -> str:
+    lines = [
+        f"[{now_stamp()}] STOCK DETECTED",
+        f"retailer={result.retailer}",
+        f"url={result.url}",
+    ]
+    if result.title:
+        lines.append(f"title={result.title.strip()}")
+    if result.evidence:
+        lines.append(f"evidence={result.evidence}")
+    return " | ".join(lines)
+
+
 def load_urls(args: argparse.Namespace) -> list[str]:
     urls: list[str] = []
     if args.urls_file:
@@ -174,8 +187,8 @@ def load_urls(args: argparse.Namespace) -> list[str]:
     return deduped
 
 
-async def run_once(urls: list[str], headless: bool) -> int:
-    any_in_stock = False
+async def run_once(urls: list[str], headless: bool) -> list[CheckResult]:
+    results: list[CheckResult] = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=headless)
         context = await browser.new_context(
@@ -189,14 +202,13 @@ async def run_once(urls: list[str], headless: bool) -> int:
                 try:
                     result = await inspect_url(page, url)
                     print(format_result(result))
-                    if result.available:
-                        any_in_stock = True
+                    results.append(result)
                 finally:
                     await page.close()
         finally:
             await context.close()
             await browser.close()
-    return 2 if any_in_stock else 0
+    return results
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -204,13 +216,15 @@ async def run(args: argparse.Namespace) -> int:
     if not urls:
         raise SystemExit("Provide at least one product URL or --urls-file.")
 
-    if args.once:
-        return await run_once(urls, headless=not args.headed)
-
     while True:
-        code = await run_once(urls, headless=not args.headed)
-        if code == 2:
-            return code
+        results = await run_once(urls, headless=not args.headed)
+        found_any = False
+        for result in results:
+            if result.available:
+                found_any = True
+                print(f"\a{format_alert(result)}")
+        if args.once:
+            return 2 if found_any else 0
         await asyncio.sleep(args.interval)
 
 
@@ -219,7 +233,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("urls", nargs="*", help="Product page URLs to monitor")
     parser.add_argument("--urls-file", help="Text file with one product URL per line")
     parser.add_argument("--interval", type=int, default=DEFAULT_INTERVAL_SECONDS, help="Seconds between checks when looping")
-    parser.add_argument("--once", action="store_true", help="Run one check and exit")
+    parser.add_argument("--once", action="store_true", help="Run one check and exit after reporting results")
     parser.add_argument("--headed", action="store_true", help="Run with a visible browser window")
     return parser.parse_args()
 
